@@ -21,41 +21,47 @@ export class AppComponent implements OnInit {
 
   textareas: FormGroup;
 
-  private serverConnection;
-  private localConnection;
-  private remoteConnection;
+  private peerConnection: RTCPeerConnection;
+  private serverConnection: WebSocket;
+  private uuid;
 
   constructor(fb: FormBuilder) {
     this.textareas = fb.group({
       dataChannelSend: new FormControl({value: '', disabled: true}),
       dataChannelReceive: ['']
     });
+
+    this.peerConnection = new RTCPeerConnection(PEER_CONNECTION_CONFIG);
   }
 
   ngOnInit(): void {
     this.dataChannelSend.nativeElement.placeholder = 'Press Start, enter some text, then press Send...';
-    this.setupWebRtc();
+
+    this.uuid = this.createUuid();
+
+    this.serverConnection = new WebSocket(`ws://${window.location.hostname}:8080/ws/echo`);
+    this.serverConnection.onmessage = this.getSocketMessageCallback();
+    this.serverConnection.onopen = () => this.serverConnection.send(JSON.stringify({'ice': 1, 'uuid': this.uuid}));
   }
 
-  setupWebRtc() {
-    this.serverConnection = new RTCPeerConnection(PEER_CONNECTION_CONFIG);
-    console.log('Created local peer connection object localConnection');
+  private getSocketMessageCallback(): (string) => void {
+    return (message) => {
+      const signal = JSON.parse(message.data);
+      console.log(`${this.uuid}: received ${signal}`);
 
-    this.serverConnection.onicecandidate = this.gotIceCandidate;
-    this.serverConnection.onaddstream = this.gotRemoteStream;
+      if (signal.uuid === this.uuid) {
+        console.log(`${this.uuid}: self`);
+        return;
+      }
+    };
   }
 
-  private gotIceCandidate(event) {
-    if (event.candidate != null) {
-      this.serverConnection.send(JSON.stringify({ 'ice': event.candidate }));
+  // Taken from http://stackoverflow.com/a/105074/515584
+  // Strictly speaking, it's not a real UUID, but it gets the job done here
+  private createUuid(): string {
+    function s4() {
+      return Math.floor((1 + Math.random()) * 0x10000).toString(16).substring(1);
     }
-  }
-
-  private gotRemoteStream(event) {
-    console.log('got remote stream');
-  }
-
-  private getOtherPc(pc) {
-    return (pc === this.localConnection) ? this.remoteConnection : this.localConnection;
+    return s4() + s4() + '-' + s4() + '-' + s4() + '-' + s4() + '-' + s4() + s4() + s4();
   }
 }
