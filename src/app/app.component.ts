@@ -2,8 +2,8 @@ import {Component, ElementRef, OnInit, ViewChild} from '@angular/core';
 import {FormBuilder, FormControl, FormGroup} from '@angular/forms';
 
 const ICE_SERVERS: RTCIceServer[] = [
-  { urls: 'stun:stun.services.mozilla.com' },
-  { urls: 'stun:stun.l.google.com:19302' }
+  {urls: 'stun:stun.services.mozilla.com'},
+  {urls: 'stun:stun.l.google.com:19302'}
 ];
 
 const PEER_CONNECTION_CONFIG: RTCConfiguration = {
@@ -22,7 +22,7 @@ export class AppComponent implements OnInit {
   textareas: FormGroup;
 
   private peerConnection: RTCPeerConnection;
-  private serverConnection: WebSocket;
+  private signalingConnection: WebSocket;
   private uuid;
 
   constructor(fb: FormBuilder) {
@@ -30,18 +30,30 @@ export class AppComponent implements OnInit {
       dataChannelSend: new FormControl({value: '', disabled: true}),
       dataChannelReceive: ['']
     });
-
-    this.peerConnection = new RTCPeerConnection(PEER_CONNECTION_CONFIG);
   }
 
   ngOnInit(): void {
     this.dataChannelSend.nativeElement.placeholder = 'Press Start, enter some text, then press Send...';
-
     this.uuid = this.createUuid();
+    this.setupSignalingServer();
+    this.setupPeerServer();
+  }
 
-    this.serverConnection = new WebSocket(`ws://${window.location.hostname}:8080/ws/echo`);
-    this.serverConnection.onmessage = this.getSocketMessageCallback();
-    this.serverConnection.onopen = () => this.serverConnection.send(JSON.stringify({'ice': 1, 'uuid': this.uuid}));
+  start() {
+    this.peerConnection
+      .createOffer()
+      .then(this.createdDescription())
+      .catch(this.errorHandler);
+  }
+
+  private setupSignalingServer() {
+    this.signalingConnection = new WebSocket(`ws://${window.location.hostname}:8080/ws/echo`);
+    this.signalingConnection.onmessage = this.getSocketMessageCallback();
+  }
+
+  private setupPeerServer() {
+    this.peerConnection = new RTCPeerConnection(PEER_CONNECTION_CONFIG);
+    this.peerConnection.onicecandidate = this.getIceCandidateCallback();
   }
 
   private getSocketMessageCallback(): (string) => void {
@@ -53,7 +65,42 @@ export class AppComponent implements OnInit {
         console.log(`${this.uuid}: self`);
         return;
       }
+
+      if (signal.sdp) {
+        this.peerConnection.setRemoteDescription(new RTCSessionDescription(signal.sdp)).then(() => {
+          // Only create answers in response to offers
+          if (signal.sdp.type === 'offer') {
+            this.peerConnection.createAnswer().then(this.createdDescription()).catch(this.errorHandler);
+          }
+        }).catch(this.errorHandler);
+      } else if (signal.ice) {
+        this.peerConnection.addIceCandidate(new RTCIceCandidate(signal.ice)).catch(this.errorHandler);
+      }
     };
+  }
+
+  private getIceCandidateCallback(): (string) => void {
+    return (event) => {
+      console.log('got ice');
+
+      if (event.candidate != null) {
+        this.signalingConnection.send(JSON.stringify({ 'ice': event.candidate, 'uuid': this.uuid }));
+      }
+    };
+  }
+
+  private createdDescription(): (string) => void {
+    return (description) => {
+      console.log('got description');
+
+      this.peerConnection.setLocalDescription(description).then(() => {
+        this.signalingConnection.send(JSON.stringify({ 'sdp': this.peerConnection.localDescription, 'uuid': this.uuid }));
+      }).catch(this.errorHandler);
+    };
+  }
+
+  private errorHandler(error) {
+    console.log(error);
   }
 
   // Taken from http://stackoverflow.com/a/105074/515584
@@ -62,6 +109,7 @@ export class AppComponent implements OnInit {
     function s4() {
       return Math.floor((1 + Math.random()) * 0x10000).toString(16).substring(1);
     }
+
     return s4() + s4() + '-' + s4() + '-' + s4() + '-' + s4() + '-' + s4() + s4() + s4();
   }
 }
